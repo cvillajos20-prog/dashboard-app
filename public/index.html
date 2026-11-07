@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventory Dashboard</title>
+<style>
+  :root { --bg:#f4f6fa; --card:#fff; --text:#1c2333; --muted:#6b7488; --primary:#4f46e5; --danger:#dc2626; --border:#e3e7ef; --warn:#f59e0b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10131c; --card:#181c28; --text:#e8ebf4; --muted:#8c94a8; --border:#272d3d; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:20px 28px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+  h1 { margin:0; font-size:1.4rem; }
+  main { padding:0 28px 40px; max-width:1100px; margin:auto; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .stat .label { color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; }
+  .stat .value { font-size:1.8rem; font-weight:700; margin-top:6px; }
+  .stat.warn .value { color:var(--warn); }
+  .toolbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  input, select { padding:10px 12px; border:1px solid var(--border); background:var(--card); color:var(--text); border-radius:8px; font-size:.95rem; width:100%; }
+  .toolbar input { flex:1; min-width:200px; width:auto; }
+  button { padding:10px 16px; border:0; border-radius:8px; cursor:pointer; font-size:.9rem; font-weight:600; background:var(--primary); color:#fff; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--border); }
+  button.danger { background:var(--danger); }
+  button.sm { padding:6px 10px; font-size:.8rem; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:12px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; }
+  td.actions { display:flex; gap:6px; }
+  .badge { padding:2px 8px; border-radius:99px; font-size:.75rem; background:var(--border); }
+  .low { color:var(--warn); font-weight:700; }
+  .empty { text-align:center; color:var(--muted); padding:30px; }
+  dialog { border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text); padding:24px; width:min(420px,92vw); }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  dialog h2 { margin-top:0; }
+  label { display:block; font-size:.8rem; color:var(--muted); margin:12px 0 4px; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+  .error { color:var(--danger); font-size:.85rem; margin-top:10px; min-height:1em; }
+  .cats { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 Inventory Dashboard</h1>
+  <button id="addBtn">+ Add Item</button>
+</header>
+<main>
+  <section class="stats">
+    <div class="card stat"><div class="label">Total Items</div><div class="value" id="sItems">–</div></div>
+    <div class="card stat"><div class="label">Total Units</div><div class="value" id="sUnits">–</div></div>
+    <div class="card stat"><div class="label">Inventory Value</div><div class="value" id="sValue">–</div></div>
+    <div class="card stat warn"><div class="label">Low Stock (≤5)</div><div class="value" id="sLow">–</div></div>
+  </section>
+  <div class="card" style="margin-bottom:20px"><div class="label" style="color:var(--muted);font-size:.8rem;text-transform:uppercase">Categories</div><div class="cats" id="cats"></div></div>
+
+  <div class="toolbar"><input id="search" placeholder="Search by name or category..."></div>
+  <div class="card table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Price</th><th>Qty</th><th>Actions</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <h2 id="dlgTitle">Add Item</h2>
+  <input type="hidden" id="fId">
+  <label>Name</label><input id="fName" maxlength="120">
+  <label>Category</label><input id="fCat" maxlength="60" placeholder="General">
+  <div class="row">
+    <div><label>Price</label><input id="fPrice" type="number" min="0" step="0.01"></div>
+    <div><label>Quantity</label><input id="fQty" type="number" min="0" step="1"></div>
+  </div>
+  <div class="error" id="err"></div>
+  <div class="dialog-actions">
+    <button class="ghost" id="cancelBtn">Cancel</button>
+    <button id="saveBtn">Save</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const money = (n) => '₱' + Number(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let items = [];
+
+async function api(url, opts) {
+  const res = await fetch(url, { headers:{'Content-Type':'application/json'}, ...opts });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+async function loadStats() {
+  const s = await api('/api/stats');
+  $('sItems').textContent = s.total_items;
+  $('sUnits').textContent = s.total_units;
+  $('sValue').textContent = money(s.total_value);
+  $('sLow').textContent = s.low_stock;
+  $('cats').innerHTML = s.categories.length
+    ? s.categories.map(c => `<span class="badge">${esc(c.category)} · ${c.count}</span>`).join('')
+    : '<span style="color:var(--muted)">No categories yet</span>';
+}
+
+async function loadItems() {
+  const q = $('search').value.trim();
+  items = await api('/api/items' + (q ? '?q=' + encodeURIComponent(q) : ''));
+  $('tbody').innerHTML = items.length ? items.map(i => `
+    <tr>
+      <td>${i.id}</td>
+      <td>${esc(i.name)}</td>
+      <td><span class="badge">${esc(i.category)}</span></td>
+      <td>${money(i.price)}</td>
+      <td class="${i.quantity <= 5 ? 'low' : ''}">${i.quantity}</td>
+      <td class="actions">
+        <button class="sm ghost" onclick="openEdit(${i.id})">Edit</button>
+        <button class="sm danger" onclick="del(${i.id})">Delete</button>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">No items found.</td></tr>';
+}
+
+const refresh = () => Promise.all([loadItems(), loadStats()]);
+
+function openDialog(item) {
+  $('dlgTitle').textContent = item ? 'Edit Item' : 'Add Item';
+  $('fId').value = item?.id ?? '';
+  $('fName').value = item?.name ?? '';
+  $('fCat').value = item?.category ?? '';
+  $('fPrice').value = item?.price ?? '';
+  $('fQty').value = item?.quantity ?? '';
+  $('err').textContent = '';
+  $('dlg').showModal();
+}
+window.openEdit = (id) => openDialog(items.find(i => i.id === id));
+
+window.del = async (id) => {
+  if (!confirm('Delete this item?')) return;
+  try { await api('/api/items/' + id, { method:'DELETE' }); refresh(); }
+  catch (e) { alert(e.message); }
+};
+
+$('addBtn').onclick = () => openDialog();
+$('cancelBtn').onclick = () => $('dlg').close();
+$('saveBtn').onclick = async () => {
+  const id = $('fId').value;
+  const body = JSON.stringify({
+    name: $('fName').value, category: $('fCat').value,
+    price: $('fPrice').value, quantity: $('fQty').value
+  });
+  try {
+    await api(id ? '/api/items/' + id : '/api/items', { method: id ? 'PUT' : 'POST', body });
+    $('dlg').close(); refresh();
+  } catch (e) { $('err').textContent = e.message; }
+};
+
+let t; $('search').oninput = () => { clearTimeout(t); t = setTimeout(loadItems, 250); };
+refresh().catch(e => alert('Failed to load: ' + e.message));
+</script>
+</body>
+</html>
